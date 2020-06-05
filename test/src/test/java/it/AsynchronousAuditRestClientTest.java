@@ -1,20 +1,17 @@
 package it;
 
 import com.atlassian.jira.nimblefunctests.annotation.JiraBuildNumberDependent;
-import com.atlassian.jira.rest.client.IntegrationTestUtil;
 import com.atlassian.jira.rest.client.api.AuditRestClient;
+import com.atlassian.jira.rest.client.api.OptionalIterable;
 import com.atlassian.jira.rest.client.api.domain.AuditAssociatedItem;
 import com.atlassian.jira.rest.client.api.domain.AuditChangedValue;
 import com.atlassian.jira.rest.client.api.domain.AuditRecord;
 import com.atlassian.jira.rest.client.api.domain.AuditRecordsData;
-import com.atlassian.jira.rest.client.api.domain.Component;
 import com.atlassian.jira.rest.client.api.domain.input.AuditRecordBuilder;
 import com.atlassian.jira.rest.client.api.domain.input.AuditRecordSearchInput;
-import com.atlassian.jira.rest.client.api.domain.input.ComponentInput;
+import com.atlassian.jira.rest.client.api.domain.input.UserInput;
 import com.atlassian.jira.rest.client.internal.ServerVersionConstants;
-import com.atlassian.jira.rest.client.internal.json.TestConstants;
 import com.google.common.base.Function;
-import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
@@ -28,77 +25,67 @@ import org.joda.time.DateMidnight;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.Period;
-import org.junit.Before;
 import org.junit.Test;
 
 import javax.annotation.Nullable;
-import java.util.Iterator;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.hamcrest.Matchers.contains;
-import static org.hamcrest.Matchers.equalToIgnoringCase;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.iterableWithSize;
 import static org.hamcrest.core.Is.is;
 import static org.hamcrest.core.IsNull.notNullValue;
 import static org.hamcrest.core.IsNull.nullValue;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
 
 public class AsynchronousAuditRestClientTest extends AbstractAsynchronousRestClientTest {
 
-    private static boolean alreadyRestored;
+    @Test
+    public void testGetAllRecordsAndFilterThemByGivenAuditEvent() {
+        createUser();
 
-    @Before
-    public void setup() {
-        if (!alreadyRestored) {
-            IntegrationTestUtil.restoreAppropriateJiraData(TestConstants.DEFAULT_JIRA_DUMP_FILE, administration);
-            alreadyRestored = true;
-        }
+        final List<AuditRecord> filterResult = fetchOnlyCreatedUsers();
+
+        assertThat(filterResult, hasSize(1));
+        final AuditRecord record = filterResult.get(0);
+        System.out.println(record.getId());
+        assertThat(record.getAssociatedItems(), iterableWithSize(0));
+        final OptionalIterable<AuditChangedValue> changedValues = record.getChangedValues();
+
+        assertThat(changedValues, hasItem(new AuditChangedValue("Username", "name", null)));
+        assertThat(changedValues, hasItem(new AuditChangedValue("Full name", "displayName", null)));
+        assertThat(changedValues, hasItem(new AuditChangedValue("Email", "email@test", null)));
+        assertThat(changedValues, hasItem(new AuditChangedValue("Active / Inactive", "Active", null)));
     }
 
-    @JiraBuildNumberDependent(ServerVersionConstants.BN_JIRA_6_3)
-//    @Test
-    // TODO: fix before 8.8 final release
-    public void testGetRecords() {
+    private List<AuditRecord> fetchOnlyCreatedUsers() {
+        final AuditRecordsData auditRecordsData = client
+                .getAuditRestClient()
+                .getAuditRecords(new AuditRecordSearchInput(null, null, null, null, null))
+                .claim();
+        return StreamSupport
+                .stream(auditRecordsData.getRecords().spliterator(), false)
+                .filter(input -> input.getSummary().equals("User created") && input.getCategory().equals("user management"))
+                .collect(Collectors.toList());
 
-        final Component component = client.getComponentClient().createComponent("TST", new ComponentInput("New TST Component", null, null, null)).claim();
-        assertNotNull(component);
+    }
 
-        final AuditRecordsData auditRecordsData = client.getAuditRestClient().getAuditRecords(new AuditRecordSearchInput(null, null, null, null, null)).claim();
-        final Iterable<AuditRecord> filterResult = Iterables.filter(auditRecordsData.getRecords(), new Predicate<AuditRecord>() {
-            @Override
-            public boolean apply(final AuditRecord input) {
-                return input.getSummary().equals("Project component created") &&
-                        input.getObjectItem().getName().equals("New TST Component");
-            }
-        });
-
-        final Iterator<AuditRecord> iterator = filterResult.iterator();
-        assertThat(iterator.hasNext(), is(true));
-        final AuditRecord record = iterator.next();
-        assertThat(record.getAuthorKey(), is("admin"));
-        assertThat(record.getObjectItem().getTypeName(), is("PROJECT_COMPONENT"));
-        assertThat(record.getCreated(), is(Matchers.notNullValue()));
-
-        final Iterator<AuditAssociatedItem> itemIterator = record.getAssociatedItems().iterator();
-        final AuditAssociatedItem item1 = itemIterator.next();
-        assertThat(item1.getName(), is("Test Project"));
-        assertThat(item1.getTypeName(), is("PROJECT"));
-
-        final AuditAssociatedItem item2 = itemIterator.next();
-        assertThat(item2.getName(), is("admin"));
-        assertThat(item2.getTypeName(), is("USER"));
-        assertThat(item2.getParentId(), is("1"));
-        assertThat(item2.getParentName(), equalToIgnoringCase("Jira Internal Directory"));
-
-        final Iterator<AuditChangedValue> valuesIterator = record.getChangedValues().iterator();
-        final AuditChangedValue value1 = valuesIterator.next();
-        assertThat(value1.getFieldName(), is("Name"));
-        assertThat(value1.getChangedTo(), is("New TST Component"));
-
-        final AuditChangedValue value2 = valuesIterator.next();
-        assertThat(value2.getFieldName(), is("Default Assignee"));
-        assertThat(value2.getChangedTo(), is("Project Default"));
+    private void createUser() {
+        client.getUserClient().createUser(
+                new UserInput(
+                        "keyy",
+                        "name",
+                        "pass",
+                        "email@test",
+                        "displayName",
+                        "notification",
+                        new ArrayList<>()
+                ))
+                .claim();
     }
 
     @JiraBuildNumberDependent(ServerVersionConstants.BN_JIRA_6_3)
